@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>D3 Narrative with Scenes and Drill-Down (Dynamic Annotations)</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3-annotation/2.5.1/d3-annotation.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #fafafa; color: #222; }
+    h1 { text-align: center; }
+    #narrative { max-width: 900px; margin: 0 auto 20px auto; font-size: 18px; line-height: 1.5; padding: 10px 20px; background: white; border-radius: 6px; box-shadow: 0 0 10px #ccc; }
+    #viz { display: flex; justify-content: center; margin: 0 auto; max-width: 900px; background: white; border-radius: 6px; box-shadow: 0 0 10px #ccc; padding: 20px; }
+    svg { background: #fff; font-family: Arial, sans-serif; }
+    .bar { fill: steelblue; cursor: pointer; transition: fill 0.2s; }
+    .bar:hover { fill: darkorange; }
+    .slice { cursor: pointer; stroke: #fff; stroke-width: 2px; }
+    .slice:hover { opacity: 0.7; }
+    .back-button { margin-top: 15px; cursor: pointer; color: steelblue; font-weight: bold; user-select: none; }
+    .back-button:hover { color: darkorange; }
+    .tooltip { position: absolute; padding: 6px 10px; background-color: white; border: 1px solid #aaa; border-radius: 4px; pointer-events: none; font-size: 13px; box-shadow: 1px 1px 5px rgba(0,0,0,0.2); opacity: 0; transition: opacity 0.15s ease-in-out; color: #222; }
+    .legend { font-size: 13px; }
+    .annotation-group { opacity: 0; font-size: 12px; }
+    .annotation-group .annotation-note-title { font-size: 12px; font-weight: bold; }
+    .annotation-group .annotation-note-label { font-size: 12px; }
+  </style>
+</head>
+<body>
+
+<h1>Car Data Exploration — Narrative Visualization with Drill-Down</h1>
+<div id="narrative">Loading car data and preparing visualization...</div>
+<div id="viz"><svg width="900" height="500"></svg></div>
+<div style="max-width:900px; margin:20px auto; text-align:center;">
+  <span class="back-button" style="display:none;">&#8592; Back to Overview</span>
+</div>
+<div class="tooltip"></div>
+
+<script>
+(async function() {
+  const svg = d3.select("svg");
+  const width = +svg.attr("width");
+  const height = +svg.attr("height");
+  const margin = {top: 60, right: 30, bottom: 70, left: 80};
+  const innerWidth = width - margin.left - margin.right;
+  const innerHeight = height - margin.top - margin.bottom;
+
+  const narrativeDiv = d3.select("#narrative");
+  const backButton = d3.select(".back-button");
+  const tooltip = d3.select(".tooltip");
+
+  // Load data
+  const csvUrl = "https://flunky.github.io/cars2017.csv";
+  let data = await d3.csv(csvUrl);
+  data = data.filter(d => d.Make && d.Fuel && d.EngineCylinders && d.AverageHighwayMPG && d.AverageCityMPG)
+    .map(d => ({
+      Make: d.Make,
+      Fuel: d.Fuel,
+      EngineCylinders: +d.EngineCylinders,
+      AverageHighwayMPG: +d.AverageHighwayMPG,
+      AverageCityMPG: +d.AverageCityMPG
+    }))
+    .filter(d => !isNaN(d.EngineCylinders) && !isNaN(d.AverageHighwayMPG) && !isNaN(d.AverageCityMPG));
+
+  const container = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+  // fades-in annotations
+  function fadeInAnnotations() {
+    container.selectAll(".annotation-group")
+      .transition().duration(600)
+      .style("opacity", 1);
+  }
+
+  // SCENE 1 - Summary by fuel type - Bar Chart
+  function scene1() {
+    narrativeDiv.html(`<strong>Overview:</strong> This bar chart shows the count of cars by their <em>Fuel Type</em>. Click on any bar to drill down into detailed engine cylinder breakdown for that fuel type.`);
+    backButton.style("display", "none");
+    container.selectAll("*").remove();
+
+    const fueltypeCounts = d3.rollups(data, v => v.length, d => d.Fuel).sort((a,b) => d3.descending(a[1], b[1]));
+
+    const maxY = d3.max(fueltypeCounts, d => d[1]) * 1.2; 
+    const xScale = d3.scaleBand().domain(fueltypeCounts.map(d => d[0])).range([0, innerWidth]).padding(0.3);
+    const yScale = d3.scaleLinear().domain([0, maxY]).nice().range([innerHeight, 0]);
+
+    container.append("g").attr("transform", `translate(0,${innerHeight})`).call(d3.axisBottom(xScale)).selectAll("text").attr("transform", "rotate(-30)").attr("text-anchor", "end");
+    container.append("g").call(d3.axisLeft(yScale));
+
+    const bars = container.selectAll(".bar")
+      .data(fueltypeCounts)
+      .join("rect")
+      .attr("class", "bar")
+      .attr("x", d => xScale(d[0]))
+      .attr("y", innerHeight)
+      .attr("width", xScale.bandwidth())
+      .attr("height", 0)
+      .on("mouseenter", (event, d) => tooltip.style("opacity", 1).html(`<strong>${d[0]}</strong><br/>Count: ${d[1]}`).style("left", (event.pageX + 10) + "px").style("top", (event.pageY - 28) + "px"))
+      .on("mouseleave", () => tooltip.style("opacity", 0))
+      .on("click", (event, d) => scene2(d[0]));
+
+    bars.transition().duration(800).attr("y", d => yScale(d[1])).attr("height", d => innerHeight - yScale(d[1]));
+
+    // Dynamic annotation : highest count for fuel type
+    const maxFuelTypeCount = fueltypeCounts.reduce((a, b) => b[1] > a[1] ? b : a);
+    const annotations = [{
+      note: { 
+        title: `${maxFuelTypeCount[0]} dominates`, 
+        label: `${maxFuelTypeCount[0]} has the most cars (${maxFuelTypeCount[1]}).` 
+      },
+      x: xScale(maxFuelTypeCount[0]) + xScale.bandwidth() / 2,
+      y: yScale(maxFuelTypeCount[1]),
+      dx: -80,
+      dy: -40
+    }];
+    container.append("g")
+      .attr("class", "annotation-group")
+      .call(d3.annotation().type(d3.annotationLabel).annotations(annotations));
+
+    fadeInAnnotations();
+  }
+
+  // SCENE 2 - cylinder count Pie Chart Drill-down
+  function scene2(selectedFuel) {
+    narrativeDiv.html(`<strong>Drill-Down:</strong> This pie chart shows the breakdown of <em>Engine Cylinders</em> for cars running on <strong>${selectedFuel}</strong>. Click on a slice to see detailed MPG scatterplot.`);
+    backButton.style("display", "inline").html("&#8592; Back to Overview").on("click", scene1);
+    container.selectAll("*").remove();
+
+    const filtered = data.filter(d => d.Fuel === selectedFuel);
+    const cylCounts = d3.rollups(filtered, v => v.length, d => d.EngineCylinders).sort((a,b) => d3.descending(a[1], b[1]));
+    const radius = Math.min(innerWidth, innerHeight) / 2;
+
+    const pie = d3.pie().value(d => d[1]);
+    const arcData = pie(cylCounts);
+    const arcGenerator = d3.arc().innerRadius(0).outerRadius(radius - 40);
+    const color = d3.scaleOrdinal().domain(cylCounts.map(d => d[0])).range(d3.schemeCategory10);
+
+    const pieGroup = container.append("g").attr("transform", `translate(${innerWidth / 2},${innerHeight / 2})`);
+    pieGroup.selectAll("path")
+      .data(arcData)
+      .join("path")
+      .attr("class", "slice")
+      .attr("fill", d => color(d.data[0]))
+      .attr("d", arcGenerator)
+      .on("mouseenter", (event, d) => tooltip.style("opacity", 1).html(`<strong>${d.data[0]} cylinders</strong><br/>Count: ${d.data[1]}`).style("left", (event.pageX + 10) + "px").style("top", (event.pageY - 28) + "px"))
+      .on("mouseleave", () => tooltip.style("opacity", 0))
+      .on("click", (event, d) => scene3(selectedFuel, d.data[0]));
+
+    // Legend
+    const legend = container.append("g").attr("class", "legend").attr("transform", `translate(${innerWidth - 150},20)`);
+    cylCounts.forEach((d, i) => {
+      legend.append("rect").attr("x", 0).attr("y", i * 20).attr("width", 15).attr("height", 15).attr("fill", color(d[0]));
+      legend.append("text").attr("x", 20).attr("y", i * 20 + 12).text(`${d[0]} cylinders`);
+    });
+
+    // Dynamic annotation: Most common cylinder
+    const maxCyl = cylCounts[0];
+    const annotations = [{
+      note: { 
+        title: `${maxCyl[0]} cylinders`, 
+        label: `Most ${selectedFuel} cars use ${maxCyl[0]} cylinders (${maxCyl[1]} cars).` 
+      },
+      x: innerWidth / 2 + 40,
+      y: innerHeight / 2 - radius / 3,
+      dx: 60,
+      dy: -80
+    }];
+    container.append("g")
+      .attr("class", "annotation-group")
+      .call(d3.annotation().type(d3.annotationLabel).annotations(annotations));
+
+    fadeInAnnotations();
+  }
+
+  // SCENE 3: highway  mpg vs city mpg Scatterplot Drill-down
+  function scene3(selectedFuel, selectedCylinders) {
+    narrativeDiv.html(`<strong>Detailed View:</strong> Scatterplot of <em>Average Highway MPG</em> vs <em>Average City MPG</em> for cars with <strong>${selectedFuel}</strong> fuel and <strong>${selectedCylinders}</strong> engine cylinders.`);
+    backButton.style("display", "inline").html("&#8592; Back to Engine Cylinders Breakdown").on("click", () => scene2(selectedFuel));
+    container.selectAll("*").remove();
+
+    const filtered = data.filter(d => d.Fuel === selectedFuel && d.EngineCylinders === selectedCylinders);
+
+    const xScale = d3.scaleLinear().domain(d3.extent(filtered, d => d.AverageCityMPG)).nice().range([0, innerWidth]);
+    const yExtent = d3.extent(filtered, d => d.AverageHighwayMPG);
+    const yScale = d3.scaleLinear().domain([yExtent[0], yExtent[1] * 1.2]).nice().range([innerHeight, 0]);
+
+    container.append("g").attr("transform", `translate(0,${innerHeight})`).call(d3.axisBottom(xScale)).append("text").attr("x", innerWidth / 2).attr("y", 45).attr("fill", "#333").attr("font-weight", "bold").attr("text-anchor", "middle").text("Average City MPG");
+    container.append("g").call(d3.axisLeft(yScale)).append("text").attr("transform", "rotate(-90)").attr("x", -innerHeight / 2).attr("y", -55).attr("fill", "#333").attr("font-weight", "bold").attr("text-anchor", "middle").text("Average Highway MPG");
+
+    container.selectAll(".dot")
+      .data(filtered)
+      .join("circle")
+      .attr("class", "dot")
+      .attr("cx", d => xScale(d.AverageCityMPG))
+      .attr("cy", d => yScale(d.AverageHighwayMPG))
+      .attr("r", 0)
+      .attr("fill", "steelblue")
+      .attr("stroke", "#333")
+      .on("mouseenter", (event, d) => tooltip.style("opacity", 1).html(`<strong>Make:</strong> ${d.Make}<br/>City MPG: ${d.AverageCityMPG}<br/>Highway MPG: ${d.AverageHighwayMPG}`).style("left", (event.pageX + 10) + "px").style("top", (event.pageY - 40) + "px"))
+      .on("mouseleave", () => tooltip.style("opacity", 0))
+      .transition().duration(600)
+      .attr("r", 5);
+
+    // Dynamic annotation: Best combined MPG
+    const maxMPG = filtered.reduce((a,b) => 
+      (b.AverageCityMPG + b.AverageHighwayMPG) > (a.AverageCityMPG + a.AverageHighwayMPG) ? b : a
+    );
+    const annotations = [{
+      note: { 
+        title: "Highest Efficiency", 
+        label: `${maxMPG.Make} — Best combined MPG (${maxMPG.AverageCityMPG + maxMPG.AverageHighwayMPG}).` 
+      },
+      x: xScale(maxMPG.AverageCityMPG),
+      y: yScale(maxMPG.AverageHighwayMPG),
+      dx: (xScale(maxMPG.AverageCityMPG) > innerWidth / 2 ? -100 : 80),
+      dy: -30
+    }];
+    container.append("g")
+      .attr("class", "annotation-group")
+      .call(d3.annotation().type(d3.annotationLabel).annotations(annotations));
+
+    fadeInAnnotations();
+  }
+
+  // Start visualization
+  scene1();
+})();
+</script>
+</body>
+</html>
